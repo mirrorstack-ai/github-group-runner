@@ -53,8 +53,29 @@ top_up() {
     || say "top-up FAILED (compose up)"
 }
 
+# After the FIRST replacement: wait for a new-image container to reach its
+# listener and prove the scrub on it before touching the rest of the fleet. A
+# broken image then costs one container, not the pool.
+canary() {
+  local cid until=$(( $(date +%s) + 240 ))
+  while (( $(date +%s) < until )); do
+    for cid in $(docker compose ps -q runner 2>/dev/null); do
+      [[ "$(docker inspect --format '{{.Image}}' "$cid" 2>/dev/null)" == "$target" ]] || continue
+      has_listener "$cid" || continue
+      if "${PROJECT}/scripts/verify-scrub.sh" "$cid" | tee -a "${PROJECT}/autoscale.log"; then
+        say "canary OK on ${cid:0:12}"; return 0
+      fi
+      say "canary FAILED on ${cid:0:12} — aborting; the rest of the fleet stays on the old image"; return 1
+    done
+    sleep 5
+  done
+  say "canary: no new-image container reached its listener in 240 s — aborting (docker logs the new container)"
+  return 1
+}
+
 deadline=$(( $(date +%s) + TIMEOUT ))
 pass=0
+canary_done=0
 while :; do
   mapfile -t old < <(old_containers)
   (( ${#old[@]} == 0 )) && break
@@ -71,8 +92,10 @@ while :; do
       say "  $(deregister_runner "$name")"
     else
       say "  ${name}: a job landed during the drain — left alone"
+      continue
     fi
     top_up
+    if (( canary_done == 0 )); then canary || exit 1; canary_done=1; fi
   done
   (( $(old_containers | wc -l) > 0 )) && sleep 30
 done

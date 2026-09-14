@@ -6,11 +6,12 @@
 #   - the mounted key /run/secrets/app-key.pem is not readable AND non-empty
 #   - neither PID 1 nor the Runner.Listener carries GH_API_TOKEN / GH_TOKEN /
 #     GH_APP_PRIVATE_KEY(_B64) / GH_APP_ID in /proc/<pid>/environ
+# Usage: scripts/verify-scrub.sh [container-id ...]   (default: every runner container)
 # Exit 0 = every checked container clean, 1 = a hit (printed), 2 = nothing to check.
 set -uo pipefail
 PROJECT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 cd "$PROJECT" || exit 2
-ids="$(docker compose ps -q runner 2>/dev/null)"
+ids="${*:-$(docker compose ps -q runner 2>/dev/null)}"
 [[ -z "$ids" ]] && { echo "verify-scrub: no runner containers"; exit 2; }
 rc=0; n=0; skipped=0
 for cid in $ids; do
