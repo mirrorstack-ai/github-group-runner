@@ -11,6 +11,8 @@ die() { printf '[entrypoint] ERROR: %s\n' "$*" >&2; exit 1; }
 
 # shellcheck source=lib/gh-token.sh
 . /usr/local/lib/gh-token.sh
+# shellcheck source=lib/scrub.sh
+. /usr/local/lib/scrub.sh
 
 RUNNER_SCOPE="${RUNNER_SCOPE:-org}"
 RUNNER_GROUP="${RUNNER_GROUP:-Default}"
@@ -28,13 +30,11 @@ RUNNER_NAME="${RUNNER_NAME:-${RUNNER_NAME_PREFIX}-$(hostname)}"
 case "${RUNNER_SCOPE}" in
   org)
     TOKEN_PATH="orgs/${GH_OWNER}/actions/runners/registration-token"
-    REMOVE_PATH="orgs/${GH_OWNER}/actions/runners/remove-token"
     RUNNER_URL="${GITHUB_HOST}/${GH_OWNER}"
     ;;
   repo)
     : "${GH_REPO:?GH_REPO is required when RUNNER_SCOPE=repo}"
     TOKEN_PATH="repos/${GH_OWNER}/${GH_REPO}/actions/runners/registration-token"
-    REMOVE_PATH="repos/${GH_OWNER}/${GH_REPO}/actions/runners/remove-token"
     RUNNER_URL="${GITHUB_HOST}/${GH_OWNER}/${GH_REPO}"
     ;;
   *)
@@ -69,40 +69,51 @@ fetch_token() {
 }
 
 cleanup() {
-  # Ephemeral runners self-delete after a job, so this only matters when the
-  # container is stopped while idle. Failure here is not fatal.
-  log "deregistering ${RUNNER_NAME}"
-  local rm_token
-  if rm_token="$(fetch_token "${REMOVE_PATH}" 2>/dev/null)"; then
-    ./config.sh remove --token "${rm_token}" >/dev/null 2>&1 \
-      || log "deregistration failed (runner may already be gone)"
-  fi
+  # Deregistration moved to the HOST (scripts/autoscale.sh and scripts/rollout.sh
+  # delete the registration by runner name right after removing a container):
+  # this container scrubs its credentials as soon as config.sh has run, so it
+  # has nothing left to call the API with. An ephemeral runner that ran its job
+  # is removed by GitHub itself; a stale entry is taken over by --replace on the
+  # next start under the same name.
+  log "exiting ${RUNNER_NAME} (deregistration is the host's job)"
 }
 
 cd /home/runner
 
-log "scope=${RUNNER_SCOPE} url=${RUNNER_URL} group=${RUNNER_GROUP} name=${RUNNER_NAME}"
-log "requesting registration token"
-resolve_gh_token "${GH_OWNER}" || die "could not obtain GitHub credentials"
-log "auth mode: ${GH_AUTH_MODE}"
-REG_TOKEN="$(fetch_token "${TOKEN_PATH}")"
+if [[ "${RUNNER_REGISTERED:-}" != "1" ]]; then
+  log "scope=${RUNNER_SCOPE} url=${RUNNER_URL} group=${RUNNER_GROUP} name=${RUNNER_NAME}"
+  log "requesting registration token"
+  resolve_gh_token "${GH_OWNER}" || die "could not obtain GitHub credentials"
+  log "auth mode: ${GH_AUTH_MODE}"
+  REG_TOKEN="$(fetch_token "${TOKEN_PATH}")"
 
-CONFIG_ARGS=(
-  --url "${RUNNER_URL}"
-  --token "${REG_TOKEN}"
-  --name "${RUNNER_NAME}"
-  --labels "${RUNNER_LABELS}"
-  --work "${RUNNER_WORKDIR}"
-  --unattended
-  --replace          # take over a stale registration instead of erroring out
-  --disableupdate
-)
-[[ "${RUNNER_SCOPE}" == "org" ]] && CONFIG_ARGS+=(--runnergroup "${RUNNER_GROUP}")
-[[ "${RUNNER_EPHEMERAL:-true}" == "true" ]] && CONFIG_ARGS+=(--ephemeral)
+  CONFIG_ARGS=(
+    --url "${RUNNER_URL}"
+    --token "${REG_TOKEN}"
+    --name "${RUNNER_NAME}"
+    --labels "${RUNNER_LABELS}"
+    --work "${RUNNER_WORKDIR}"
+    --unattended
+    --replace          # take over a stale registration instead of erroring out
+    --disableupdate
+  )
+  [[ "${RUNNER_SCOPE}" == "org" ]] && CONFIG_ARGS+=(--runnergroup "${RUNNER_GROUP}")
+  [[ "${RUNNER_EPHEMERAL:-true}" == "true" ]] && CONFIG_ARGS+=(--ephemeral)
 
-./config.sh "${CONFIG_ARGS[@]}"
-unset REG_TOKEN
+  ./config.sh "${CONFIG_ARGS[@]}"
+  unset REG_TOKEN
 
+  # Registration is the last thing that needs a credential. Everything from
+  # here on — every job step included — runs as this uid in this container, so
+  # delete the staged key and drop the token from the environment (core-v2#1503).
+  scrub_credentials
+  # Then re-exec: `unset` edits bash's own table, but the block the kernel shows
+  # in /proc/1/environ (readable by uid 1001) is the one exec handed us, which
+  # in PAT mode held GH_TOKEN. A fresh exec rebuilds it from the scrubbed set.
+  exec env RUNNER_REGISTERED=1 "$0"
+fi
+
+# ---- second pass: no credential exists in this process any more -------------
 RUNNER_PID=""
 term_handler() {
   log "signal received — asking the runner to finish and exit"

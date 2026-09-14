@@ -88,6 +88,7 @@ USER root
 RUN /home/runner/bin/installdependencies.sh && rm -rf /var/lib/apt/lists/*
 
 COPY --chown=root:root --chmod=0644 lib/gh-token.sh        /usr/local/lib/gh-token.sh
+COPY --chown=root:root --chmod=0644 lib/scrub.sh           /usr/local/lib/scrub.sh
 COPY --chown=root:root --chmod=0755 entrypoint.sh          /usr/local/bin/entrypoint.sh
 COPY --chown=root:root --chmod=0755 dind-entrypoint.sh     /usr/local/bin/dind-entrypoint.sh
 

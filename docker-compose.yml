@@ -45,8 +45,10 @@ services:
       # It must be a volume at all: overlay2 cannot stack on the container's
       # own overlayfs.
       - /var/lib/docker
-      # GitHub App key, read-only. Safe on Linux; dind-entrypoint.sh copies it
-      # to a uid-1001-readable path as root, so the host file can stay 600 root.
+      # GitHub App key, read-only; keep the host file mode 600. dind-entrypoint.sh
+      # copies it for uid 1001 as root and then UNMOUNTS it inside the container;
+      # entrypoint.sh deletes the copy right after registration (core-v2#1503),
+      # so a job step never sees a key. Docker mounts it again on every restart.
       - ${GH_APP_KEY_PATH:-./secrets/app-key.pem}:/run/secrets/app-key.pem:ro
       # Uncomment for GPU workflows (needs nvidia-container-toolkit on the host).
       # Note this shares the host GPU across every replica.
