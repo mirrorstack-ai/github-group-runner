@@ -1,0 +1,58 @@
+name: gh-runners-dgx
+
+services:
+  runner:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: gh-runner-dgx:local
+    platform: linux/arm64
+    # Replica count is driven by scripts/autoscale.sh between RUNNER_MIN and
+    # RUNNER_MAX. This is only the value used on a cold `docker compose up -d`.
+    deploy:
+      replicas: ${RUNNER_REPLICAS:-4}
+      resources:
+        limits:
+          cpus: "${RUNNER_CPUS:-4}"
+          memory: ${RUNNER_MEMORY:-8g}
+    restart: always
+    # Required for the in-container dockerd (cgroups, overlay2, iptables).
+    privileged: true
+    environment:
+      GH_OWNER: ${GH_OWNER:-}
+      GH_REPO: ${GH_REPO:-}
+      GH_APP_ID: ${GH_APP_ID:-}
+      # Linux host: mount the .pem and point at it (below). The base64 variant
+      # exists only for macOS/OrbStack, where bind-mounting the key hangs the
+      # container. Set one or the other, not both — B64 wins if both are set.
+      GH_APP_PRIVATE_KEY: ${GH_APP_PRIVATE_KEY:-/run/secrets/app-key.pem}
+      GH_APP_PRIVATE_KEY_B64: ${GH_APP_PRIVATE_KEY_B64:-}
+      GH_TOKEN: ${GH_TOKEN:-}
+      RUNNER_SCOPE: ${RUNNER_SCOPE:-org}
+      RUNNER_GROUP: ${RUNNER_GROUP:-dgx-spark}
+      # NOTE: this is a PREFIX, not a name. entrypoint.sh appends the container
+      # id, so every runner gets a unique name. Do NOT pin full names like
+      # "dgx-spark-3" — that is why a dead runner never came back.
+      RUNNER_NAME_PREFIX: ${RUNNER_NAME_PREFIX:-dgx-spark}
+      RUNNER_LABELS: ${RUNNER_LABELS:-self-hosted,Linux,ARM64,dgx-spark,docker}
+      RUNNER_EPHEMERAL: ${RUNNER_EPHEMERAL:-true}
+      RUNNER_ENABLE_DIND: ${RUNNER_ENABLE_DIND:-true}
+      DIND_SELFTEST: ${DIND_SELFTEST:-false}
+      ACTIONS_RUNNER_PRINT_LOG_TO_STDOUT: ${RUNNER_DEBUG_LOGS:-}
+    volumes:
+      # ANONYMOUS volume — each replica gets its OWN /var/lib/docker. A named
+      # volume here would be shared by every replica and corrupt itself.
+      # It must be a volume at all: overlay2 cannot stack on the container's
+      # own overlayfs.
+      - /var/lib/docker
+      # GitHub App key, read-only. Safe on Linux; dind-entrypoint.sh copies it
+      # to a uid-1001-readable path as root, so the host file can stay 600 root.
+      - ${GH_APP_KEY_PATH:-./secrets/app-key.pem}:/run/secrets/app-key.pem:ro
+      # Uncomment for GPU workflows (needs nvidia-container-toolkit on the host).
+      # Note this shares the host GPU across every replica.
+      # - /dev/nvidia0:/dev/nvidia0
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

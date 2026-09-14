@@ -1,0 +1,7 @@
+# live credentials and host state — never commit
+.env
+secrets/
+autoscale.log
+.autoscale.lock
+.autoscale.state
+*.bak-*
