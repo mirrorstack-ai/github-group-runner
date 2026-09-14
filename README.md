@@ -86,6 +86,23 @@ inside every running container; `tests/scrub-test.sh` unit-tests the scrub
 (runs in CI). Keep `secrets/app-key.pem` at mode 600, owned by the user whose
 cron runs the autoscaler: the container reads it as root anyway.
 
+## Warm caches shared by the pool
+
+Two named volumes are mounted into every replica and handed to every job:
+
+- `toolcache` at `/home/runner/toolcache`, exported as `RUNNER_TOOL_CACHE`. This
+  is where `actions/setup-go` and `actions/setup-node` look before downloading.
+  `scripts/warm-go.sh 1.26.8 1.25.0` pre-extracts the exact Go versions the
+  workflows resolve, so no container ever downloads a toolchain. Re-run it when
+  a workflow starts logging "Attempting to download" for a new patch version.
+- `gocache` at `/home/runner/gocache`, exported as `GOMODCACHE` (`mod/`) and
+  `GOCACHE` (`build/`), with `GOFLAGS=-modcacherw`. Both caches are safe for
+  concurrent use across replicas, so workflows can set `cache: false` on
+  setup-go and skip the network cache round trip.
+
+`dind-entrypoint.sh` chowns both mount points to the runner uid at start. The
+volumes survive `scripts/rollout.sh`; delete them by hand to start cold.
+
 ## Rolling out a new image
 
 ```bash

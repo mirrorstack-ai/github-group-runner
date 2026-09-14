@@ -39,6 +39,16 @@ services:
       RUNNER_ENABLE_DIND: ${RUNNER_ENABLE_DIND:-true}
       DIND_SELFTEST: ${DIND_SELFTEST:-false}
       ACTIONS_RUNNER_PRINT_LOG_TO_STDOUT: ${RUNNER_DEBUG_LOGS:-}
+      # Warm caches on volumes shared by every replica (T63). The runner hands
+      # these to every job. RUNNER_TOOL_CACHE is where actions/setup-go (and
+      # setup-node) look before downloading a toolchain; scripts/warm-go.sh
+      # pre-extracts the Go versions in use there. Go's module and build caches
+      # are safe for concurrent use; -modcacherw keeps the shared module cache
+      # writable across containers (Go marks it read-only by default).
+      RUNNER_TOOL_CACHE: /home/runner/toolcache
+      GOMODCACHE: /home/runner/gocache/mod
+      GOCACHE: /home/runner/gocache/build
+      GOFLAGS: ${GOFLAGS:--modcacherw}
     volumes:
       # ANONYMOUS volume — each replica gets its OWN /var/lib/docker. A named
       # volume here would be shared by every replica and corrupt itself.
@@ -50,6 +60,11 @@ services:
       # entrypoint.sh deletes the copy right after registration (core-v2#1503),
       # so a job step never sees a key. Docker mounts it again on every restart.
       - ${GH_APP_KEY_PATH:-./secrets/app-key.pem}:/run/secrets/app-key.pem:ro
+      # Shared, NAMED volumes (unlike /var/lib/docker above): one toolchain and
+      # one Go cache for the whole pool. dind-entrypoint.sh chowns the mount
+      # points to uid 1001 at start, since docker creates them as root.
+      - toolcache:/home/runner/toolcache
+      - gocache:/home/runner/gocache
       # Uncomment for GPU workflows (needs nvidia-container-toolkit on the host).
       # Note this shares the host GPU across every replica.
       # - /dev/nvidia0:/dev/nvidia0
@@ -58,3 +73,7 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
+
+volumes:
+  toolcache:
+  gocache:

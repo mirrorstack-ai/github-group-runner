@@ -14,6 +14,14 @@ DOCKERD_ENABLED="${RUNNER_ENABLE_DIND:-true}"
 DOCKERD_TIMEOUT="${DOCKERD_TIMEOUT:-60}"
 
 drop_to_runner() {
+  # The shared cache volumes (docker-compose.yml: toolcache, gocache) are
+  # created by docker as root on first mount; the runner and every job run as
+  # uid 1001 and must write there. Top level only — the contents already
+  # belong to 1001 and a recursive chown over a warm cache would be slow.
+  for d in /home/runner/toolcache /home/runner/gocache; do
+    [[ -d "$d" ]] && chown 1001:1001 "$d"
+  done
+
   # Stage the app key FIRST. This must live here, not further down: when
   # RUNNER_ENABLE_DIND=false we jump straight to this function, and a key left
   # owned by root would be unreadable to uid 1001 — no runner would register.
