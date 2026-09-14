@@ -35,6 +35,7 @@ say() { printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" >> "$LOG"; }
 
 set -a; . ./.env; set +a
 . ./lib/gh-token.sh
+. ./lib/runners.sh     # has_worker, listener_age, drain_container, deregister_runner (shared with rollout.sh)
 
 # This script runs on the HOST, not in a container. .env carries the host path
 # as GH_APP_KEY_PATH, while GH_APP_PRIVATE_KEY (/run/secrets/app-key.pem) is a
@@ -119,24 +120,9 @@ remove=$(( current - desired ))
 (( remove > SCALE_DOWN_MAX )) && remove=$SCALE_DOWN_MAX
 say "scale DOWN ${current} -> ${desired} (busy=${busy}), removing up to ${remove} idle"
 
-# A job is running in a container iff a Runner.Worker process exists in it.
-# Read from the HOST at the instant we act — the API snapshot above lags job
-# assignment by up to ~30 s, which is exactly the window that killed jobs.
-has_worker()   { docker top "$1" -o pid,args 2>/dev/null | grep -q '[R]unner\.Worker'; }
-is_running()   { docker inspect --format '{{.State.Running}}' "$1" 2>/dev/null | grep -q true; }
-# Seconds the listener has been up. docker top insists on a pid column, so
-# etimes rides next to it; if the listener is not up yet (dind stagger,
-# registration) fall back to the container's own age, which is always >= it.
-listener_age() {
-  local a
-  a="$(docker top "$1" -o pid,etimes,args 2>/dev/null | awk '/[R]unner\.Listener/ {print $2; exit}')"
-  if [[ -z "$a" ]]; then
-    local s; s="$(docker inspect --format '{{.State.StartedAt}}' "$1" 2>/dev/null)"
-    [[ -n "$s" ]] && a=$(( $(date +%s) - $(date -d "$s" +%s 2>/dev/null || echo 0) ))
-  fi
-  echo "${a:-}"
-}
-
+# Idle = no Runner.Worker in the container at the instant we act (host-side
+# docker top; the API snapshot above lags job assignment by up to ~30 s) AND a
+# listener old enough not to be the one about to take the next queued job.
 removed=0
 for cid in $(docker compose ps -q runner 2>/dev/null); do
   (( removed >= remove )) && break
@@ -154,29 +140,18 @@ for cid in $(docker compose ps -q runner 2>/dev/null); do
     say "  skip ${name}: listener ${age:-absent}s old (< ${IDLE_MIN_AGE}s)"
     continue
   fi
-  # The service is `restart: always`: when the listener exits the container
-  # comes straight back with a FRESH registration that grabs the next queued
-  # job (measured 12:50-12:57: every removal ran the full grace and four
-  # "idle" containers were busy again by the end of it). Pin it down first.
-  docker update --restart=no "$cid" >/dev/null 2>&1
-  # Ask the LISTENER itself to leave. Idle, it exits at once and entrypoint.sh
-  # deregisters. If a job landed in the last few ms the runner cancels and
-  # REPORTS it instead of the job hanging as an orphan for 10 minutes.
-  docker exec "$cid" pkill -TERM -x Runner.Listener >/dev/null 2>&1
-  waited=0
-  while (( waited < STOP_GRACE )) && is_running "$cid"; do
-    sleep 1; waited=$(( waited + 1 ))
-  done
-  if is_running "$cid"; then
-    if has_worker "$cid"; then
-      say "  ${name}: running a job after ${waited}s — NOT killing it, deferred"
-      continue
-    fi
-    docker stop -t 30 "$cid" >/dev/null 2>&1
+  # drain_container pins restart=no first (restart: always would bring the
+  # container straight back with a fresh registration — measured 12:50-12:57,
+  # four "idle" containers were busy again by the end of the grace), asks the
+  # LISTENER to leave, and never kills a job that lands meanwhile. The
+  # container cannot deregister itself any more (core-v2#1503): do it here.
+  if waited=$(drain_container "$cid" "$STOP_GRACE"); then
+    removed=$(( removed + 1 ))
+    say "  removed idle ${name} (listener ${age}s old, gone after ${waited}s)"
+    say "  $(deregister_runner "$name")"
+  else
+    say "  ${name}: running a job after ${waited}s — NOT killing it, deferred"
   fi
-  docker rm "$cid" >/dev/null 2>&1 || docker rm -f "$cid" >/dev/null 2>&1
-  removed=$(( removed + 1 ))
-  say "  removed idle ${name} (listener ${age}s old, gone after ${waited}s)"
 done
 
 (( removed < remove )) && say "only ${removed}/${remove} were idle; rest deferred"

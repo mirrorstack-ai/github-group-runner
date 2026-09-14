@@ -1,0 +1,19 @@
+name: ci
+on:
+  push:
+    branches: [main]
+  pull_request:
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: syntax
+        run: |
+          for f in entrypoint.sh dind-entrypoint.sh lib/*.sh scripts/*.sh tests/*.sh; do
+            bash -n "$f" || exit 1
+          done
+      - name: shellcheck (errors only)
+        run: shellcheck -S error entrypoint.sh dind-entrypoint.sh lib/*.sh scripts/*.sh tests/*.sh
+      - name: scrub unit test
+        run: bash tests/scrub-test.sh

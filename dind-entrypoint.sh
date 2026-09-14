@@ -19,9 +19,22 @@ drop_to_runner() {
   # owned by root would be unreadable to uid 1001 — no runner would register.
   if [[ -n "${GH_APP_PRIVATE_KEY:-}" && -r "${GH_APP_PRIVATE_KEY}" \
         && "${GH_APP_PRIVATE_KEY}" != "/home/runner/.gh-app-key.pem" ]]; then
-    install -o 1001 -g 1001 -m 600 "${GH_APP_PRIVATE_KEY}" /home/runner/.gh-app-key.pem
+    local mounted="${GH_APP_PRIVATE_KEY}"
+    install -o 1001 -g 1001 -m 600 "${mounted}" /home/runner/.gh-app-key.pem
     export GH_APP_PRIVATE_KEY=/home/runner/.gh-app-key.pem
     log "app key staged for uid 1001 (mode 600)"
+    # The bind-mounted original would otherwise stay visible for the whole life
+    # of the container, and every job step runs as uid 1001 in this container
+    # (core-v2#1503). Unmount it — our own mount namespace, rprivate, so the
+    # host never notices — or cover it with /dev/null if the unmount is refused.
+    # Docker mounts it again on every restart, so the next registration finds it.
+    umount "${mounted}" 2>/dev/null || mount --bind /dev/null "${mounted}" 2>/dev/null || true
+    if setpriv --reuid=1001 --regid=1001 --clear-groups \
+         sh -c 'test -r "$1" && test -s "$1"' _ "${mounted}" 2>/dev/null; then
+      log "ERROR: ${mounted} is still readable by uid 1001 — refusing to start (core-v2#1503)"
+      exit 1
+    fi
+    log "mounted key hidden from uid 1001"
   fi
 
   # setpriv execs, so entrypoint.sh becomes PID 1 and Docker's SIGTERM reaches

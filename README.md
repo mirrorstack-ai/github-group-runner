@@ -64,15 +64,51 @@ GitHub reported the job dead at about 601 s with "lost communication with the
 server". Over two days, 26 of 28 such deaths matched a "removed idle" log line
 2 to 36 s after the job started. After the change above: zero.
 
+## Credentials inside a runner
+
+A job step runs as uid 1001 in the same container as the runner, so nothing
+that uid can read may hold a credential once a job can start. The container
+therefore:
+
+- copies the mounted App key for uid 1001 as root, then unmounts the mount
+  inside its own namespace, and refuses to start if the mount is still
+  readable by uid 1001 (`dind-entrypoint.sh`);
+- registers, deletes the copy, unsets every `GH_*` credential variable, proves
+  both are gone, and re-execs itself so `/proc/1/environ` is rebuilt from the
+  scrubbed set (`entrypoint.sh` + `lib/scrub.sh`). A scrub that leaves anything
+  behind exits instead of starting the runner;
+- cannot deregister itself any more. The host does it by runner name right
+  after removing a container (`lib/runners.sh`, used by the autoscaler and by
+  the rollout). An ephemeral runner that ran its job is removed by GitHub.
+
+`scripts/verify-scrub.sh` asserts the property from the host, as uid 1001,
+inside every running container; `tests/scrub-test.sh` unit-tests the scrub
+(runs in CI). Keep `secrets/app-key.pem` at mode 600, owned by the user whose
+cron runs the autoscaler: the container reads it as root anyway.
+
+## Rolling out a new image
+
+```bash
+scripts/rollout.sh            # build, drain old-image containers one by one, top up from the new image, verify-scrub
+scripts/rollout.sh --no-build # same, onto whatever the image tag already holds
+```
+
+It holds `.autoscale.lock` for the duration, never removes a container with a
+job in it (it comes back for it on the next pass), and exits 1 with the number
+of containers it could not replace when `ROLLOUT_TIMEOUT` (default 30 min)
+runs out. `restart: always` re-runs the OLD image, so a rebuild without a
+rollout changes nothing.
+
 ## Operating
 
 - Health: `docker compose ps` and `tail -f autoscale.log`. A healthy log shows
   `steady:` lines once a minute and removals that are "gone after" single-digit
-  seconds.
+  seconds, each followed by a `deregistered` line.
 - `RUNNER_NAME_PREFIX` is a prefix. Do not pin full runner names; a pinned name
   is why a dead runner once never came back.
 - Runners that die uncleanly leave an "offline" registration in the org's
-  runner list. They are harmless; prune by hand when they annoy you.
+  runner list. They are harmless; prune by hand when they annoy you. The
+  scripts only ever delete the registration of a container they just removed.
 - GPU jobs: uncomment the `/dev/nvidia0` mount in the compose file. The GPU is
   then shared by every replica.
 - macOS/OrbStack: bind-mounting the key hangs the container; set
