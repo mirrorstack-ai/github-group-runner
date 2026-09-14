@@ -37,13 +37,23 @@ if [[ "${1:-}" != "--no-build" ]]; then
 fi
 target="$(docker image inspect --format '{{.Id}}' "$IMAGE" 2>/dev/null)"
 [[ -z "$target" ]] && { say "image ${IMAGE} not found"; exit 1; }
+# A container is current only if BOTH its image and its compose config match:
+# a compose-only change (env, volumes) leaves the image id identical, and
+# 19:02 on 09-14 a --no-build roll declared all 20 containers current on the
+# image alone and recreated nothing.
+config_hash="$(docker compose config --hash runner 2>/dev/null | awk '{print $2}')"
 count="$(docker compose ps -q runner 2>/dev/null | wc -l | tr -d ' ')"
-say "target image ${target#sha256:}, pool ${count}"
+say "target image ${target#sha256:}, config ${config_hash:0:12}, pool ${count}"
 
 old_containers() {
   local cid
   for cid in $(docker compose ps -q runner 2>/dev/null); do
-    [[ "$(docker inspect --format '{{.Image}}' "$cid" 2>/dev/null)" == "$target" ]] || echo "$cid"
+    if [[ "$(docker inspect --format '{{.Image}}' "$cid" 2>/dev/null)" == "$target" ]] \
+       && [[ -n "$config_hash" ]] \
+       && [[ "$(docker inspect --format '{{index .Config.Labels "com.docker.compose.config-hash"}}' "$cid" 2>/dev/null)" == "$config_hash" ]]; then
+      continue
+    fi
+    echo "$cid"
   done
 }
 top_up() {
@@ -62,7 +72,8 @@ canary() {
   local cid out rc until=$(( $(date +%s) + 300 ))
   while (( $(date +%s) < until )); do
     for cid in $(docker compose ps -q runner 2>/dev/null); do
-      [[ "$(docker inspect --format '{{.Image}}' "$cid" 2>/dev/null)" == "$target" ]] || continue
+      # only a container that is current on BOTH image and config counts as new
+      old_containers | grep -qx "$cid" && continue
       out="$("${PROJECT}/scripts/verify-scrub.sh" "$cid" 2>&1)"; rc=$?
       case $rc in
         0) printf '%s\n' "$out" | tee -a "${PROJECT}/autoscale.log"; say "canary OK on ${cid:0:12}"; return 0;;
