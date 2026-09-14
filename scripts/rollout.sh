@@ -57,19 +57,22 @@ top_up() {
 # listener and prove the scrub on it before touching the rest of the fleet. A
 # broken image then costs one container, not the pool.
 canary() {
-  local cid until=$(( $(date +%s) + 240 ))
+  # verify-scrub judges a container only once PID 1 carries RUNNER_REGISTERED=1
+  # (post-scrub re-exec); before that it answers 2 = not judged yet, so wait.
+  local cid out rc until=$(( $(date +%s) + 300 ))
   while (( $(date +%s) < until )); do
     for cid in $(docker compose ps -q runner 2>/dev/null); do
       [[ "$(docker inspect --format '{{.Image}}' "$cid" 2>/dev/null)" == "$target" ]] || continue
-      has_listener "$cid" || continue
-      if "${PROJECT}/scripts/verify-scrub.sh" "$cid" | tee -a "${PROJECT}/autoscale.log"; then
-        say "canary OK on ${cid:0:12}"; return 0
-      fi
-      say "canary FAILED on ${cid:0:12} — aborting; the rest of the fleet stays on the old image"; return 1
+      out="$("${PROJECT}/scripts/verify-scrub.sh" "$cid" 2>&1)"; rc=$?
+      case $rc in
+        0) printf '%s\n' "$out" | tee -a "${PROJECT}/autoscale.log"; say "canary OK on ${cid:0:12}"; return 0;;
+        1) printf '%s\n' "$out" | tee -a "${PROJECT}/autoscale.log"
+           say "canary FAILED on ${cid:0:12} — aborting; the rest of the fleet stays on the old image"; return 1;;
+      esac
     done
     sleep 5
   done
-  say "canary: no new-image container reached its listener in 240 s — aborting (docker logs the new container)"
+  say "canary: no new-image container finished registering in 300 s — aborting (docker logs the new container)"
   return 1
 }
 

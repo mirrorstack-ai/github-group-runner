@@ -7,7 +7,9 @@
 # Read from the HOST at the instant we act — the API snapshot lags job
 # assignment by up to ~30 s, which is exactly the window that killed jobs.
 has_worker()   { docker top "$1" -o pid,args 2>/dev/null | grep -q '[R]unner\.Worker'; }
-has_listener() { docker top "$1" -o pid,args 2>/dev/null | grep -q '[R]unner\.Listener'; }
+# "run", not just any Runner.Listener: config.sh spawns `Runner.Listener configure`
+# during registration, and that one must not count as the runner being up.
+has_listener() { docker top "$1" -o pid,args 2>/dev/null | grep -q '[R]unner\.Listener run'; }
 is_running()   { docker inspect --format '{{.State.Running}}' "$1" 2>/dev/null | grep -q true; }
 
 # Seconds the listener has been up. docker top insists on a pid column, so
