@@ -5,3 +5,4 @@ autoscale.log
 .autoscale.lock
 .autoscale.state
 *.bak-*
+rollout*.out
