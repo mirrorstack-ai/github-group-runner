@@ -81,6 +81,17 @@ cleanup() {
 cd /home/runner
 
 if [[ "${RUNNER_REGISTERED:-}" != "1" ]]; then
+  # restart:always restarts THIS container (same writable layer) after an
+  # ephemeral run.sh exits, not a fresh one — RUNNER_REGISTERED resets with
+  # it, so we land back here with last run's .runner/.credentials still on
+  # disk and config.sh refuses locally ("already configured"). GitHub-side
+  # cleanup is already handled by --replace below and by the host's
+  # deregistration scripts, so it's safe to drop the local state and
+  # re-register fresh every time.
+  if [[ -f .runner ]]; then
+    log "clearing stale local registration from a previous run"
+    rm -f .runner .credentials .credentials_rsaparams
+  fi
   log "scope=${RUNNER_SCOPE} url=${RUNNER_URL} group=${RUNNER_GROUP} name=${RUNNER_NAME}"
   log "requesting registration token"
   resolve_gh_token "${GH_OWNER}" || die "could not obtain GitHub credentials"
