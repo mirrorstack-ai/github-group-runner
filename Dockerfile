@@ -7,8 +7,8 @@ FROM ubuntu:24.04
 
 # Pinned in one place. Bump RUNNER_VERSION + RUNNER_SHA256 together — the
 # checksum comes from the release notes of https://github.com/actions/runner/releases
-ARG RUNNER_VERSION=2.336.0
-ARG RUNNER_SHA256=58b758e420b87093fbd4bfddd368074960053e2f1388f01848c82624b90f27d1
+ARG RUNNER_VERSION=2.338.2
+ARG RUNNER_SHA256=670adb2f268fe21dcbb58b3db0e0aa9d5b3bddfe2c651481336e561ff86de945
 ARG DOCKER_CLI_VERSION=28.5.2
 
 # RUNNER_MANUALLY_TRAP_SIG stops run.sh installing its own signal handlers, so
