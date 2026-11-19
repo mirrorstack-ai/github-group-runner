@@ -59,7 +59,7 @@ STOP_GRACE="${RUNNER_STOP_GRACE:-120}"                    # s we wait for a runn
 SCALE_DOWN_COOLDOWN="${RUNNER_SCALE_DOWN_COOLDOWN:-300}"  # s after a scale-up during which we never scale down
 SCALE_DOWN_MAX="${RUNNER_SCALE_DOWN_MAX:-2}"              # containers removed per tick, at most
 STATE="${PROJECT}/.autoscale.state"                       # epoch of the last successful scale-up
-DISK_MIN_FREE_PCT="${DISK_MIN_FREE_PCT:-10}"              # % free below which we never scale up
+DISK_MIN_FREE_PCT="${DISK_MIN_FREE_PCT:-5}"              # % free below which we never scale up
 DISK_CRIT_FREE_PCT="${DISK_CRIT_FREE_PCT:-3}"             # % free below which idle runners drain toward 1
 SWEEP_MAX="${RUNNER_SWEEP_MAX:-50}"                       # ledgered volumes removed per tick, at most
 

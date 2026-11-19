@@ -130,9 +130,12 @@ docker container prune -f >/dev/null 2>&1 || true
 docker network prune -f >/dev/null 2>&1 || true
 
 # Keep that volume from growing for ever: it survives every `restart: always`.
-# Docker's `until` filter is on image CREATION time, so unused images older than
-# DIND_PRUNE_UNTIL (72h) go on every restart and are re-pulled when a job needs
-# them: raise it if pulls hurt. These touch THIS container's own dockerd only:
+# Dangling images, build cache older than DIND_PRUNE_UNTIL (72h) and the inner
+# dockerd's volumes go on every restart. Tagged images (postgres, pgvector,
+# localstack...) are the pull cache, so they go only once this dockerd's data
+# passes DIND_MAX_GB (default 60): `until` is on image CREATION time, so pruning
+# them by age would re-pull every service image on every job. These touch THIS
+# container's own dockerd only:
 # the socket is pinned, and nothing is pruned unless the daemon behind it is
 # named after this container's hostname (a host daemon never is).
 PRUNE_UNTIL="${DIND_PRUNE_UNTIL:-72h}"
@@ -151,7 +154,12 @@ prune_inner() {
   fi
   return 0
 }
-prune_inner "image prune" image prune -af --filter until="${PRUNE_UNTIL}" || true
+inner_gb() { du -sxk /var/lib/docker 2>/dev/null | awk '{print int($1/1048576)}'; }
+if (( $(inner_gb || echo 0) >= ${DIND_MAX_GB:-60} )); then
+  prune_inner "image prune (over ${DIND_MAX_GB:-60}G)" image prune -af || true
+else
+  prune_inner "image prune (dangling)" image prune -f || true
+fi
 prune_inner "builder prune" builder prune -af --filter until="${PRUNE_UNTIL}" || true
 prune_inner "volume prune" volume prune -af || true
 

@@ -39,6 +39,7 @@ services:
       RUNNER_ENABLE_DIND: ${RUNNER_ENABLE_DIND:-true}
       DIND_SELFTEST: ${DIND_SELFTEST:-false}
       DIND_PRUNE_UNTIL: ${DIND_PRUNE_UNTIL:-72h}
+      DIND_MAX_GB: ${DIND_MAX_GB:-60}
       ACTIONS_RUNNER_PRINT_LOG_TO_STDOUT: ${RUNNER_DEBUG_LOGS:-}
       # Warm caches on volumes shared by every replica (T63). The runner hands
       # these to every job. RUNNER_TOOL_CACHE is where actions/setup-go (and

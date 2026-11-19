@@ -123,8 +123,8 @@ log() { :; }
 # each prune must be a live column-0 call BEFORE the last (exec-ing) drop_to_runner (SC2016: literal match)
 last="$(grep -n '^drop_to_runner$' dind-entrypoint.sh | tail -1 | cut -d: -f1)"
 # shellcheck disable=SC2016
-for p in 'image prune -af --filter until="${PRUNE_UNTIL}"' 'builder prune -af --filter until="${PRUNE_UNTIL}"' 'volume prune -af'; do
-  ln="$(grep -nF "prune_inner \"${p%% *} prune\" ${p}" dind-entrypoint.sh | sed -n 's/^\([0-9]*\):prune_inner .*/\1/p')"
+for p in 'image prune -f' 'image prune -af' 'builder prune -af --filter until="${PRUNE_UNTIL}"' 'volume prune -af'; do
+  ln="$(grep -nF "prune_inner \"${p%% *} prune" dind-entrypoint.sh | grep -F " ${p} " | head -1 | sed -n 's/^\([0-9]*\): *prune_inner .*/\1/p')"
   check "entrypoint runs '${p%% -*}' before the runner starts" test "${ln:-99999}" -lt "${last:-0}"
 done
 DOCKER_HOST=unix:///tmp/host-docker.sock prune_inner "volume prune" volume prune -af   # a host env must not reach it
@@ -139,7 +139,7 @@ check "a failing inner prune never aborts the entrypoint" test "$rc" = 0
 # ---- the disk guard ----------------------------------------------------------
 reset
 echo 50 > "$FAKE/free_pct"; check "50% free is ok"   test "$(disk_level)" = "ok 50"
-echo 9  > "$FAKE/free_pct"; check "9% free is low"   test "$(disk_level)" = "low 9"
+echo 4  > "$FAKE/free_pct"; check "4% free is low"   test "$(disk_level)" = "low 4"
 echo 2  > "$FAKE/free_pct"; check "2% free is crit"  test "$(disk_level)" = "crit 2"
 touch "$FAKE/df_fails";     check "unreadable disk is unknown, not blocking" test "$(disk_level)" = "unknown -"
 
@@ -153,11 +153,11 @@ containers() { : > "$FAKE/containers"; i=1; while [[ $i -le $1 ]]; do echo "c$i"
 
 reset; containers 0
 tick; check "positive control: 50% free scales up to 4" grep -q 'compose up -d --scale runner=4' "$FAKE/calls.log"
-echo 5 > "$FAKE/free_pct"
-tick; nocheck "5% free: no scale-up" grep -q 'compose up' "$FAKE/calls.log"
-check "5% free: DISK LOW is logged" grep -q 'DISK LOW 5% free' "$P/autoscale.log"
+echo 4 > "$FAKE/free_pct"
+tick; nocheck "4% free: no scale-up" grep -q 'compose up' "$FAKE/calls.log"
+check "4% free: DISK LOW is logged" grep -q 'DISK LOW 4% free' "$P/autoscale.log"
 containers 6; rm -f "$P/.autoscale.state"
-tick; check "5% free: scale-down still allowed (rm -v x2)" test "$(calls 'rm -v')" = 2
+tick; check "4% free: scale-down still allowed (rm -v x2)" test "$(calls 'rm -v')" = 2
 date +%s > "$P/.autoscale.state"; echo 2 > "$FAKE/free_pct"; containers 3
 tick; check "2% free: drains toward 1 despite the cooldown" test "$(calls 'rm -v')" = 2
 check "2% free: log says scale DOWN 3 -> 1" grep -q 'scale DOWN 3 -> 1' "$P/autoscale.log"

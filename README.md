@@ -139,10 +139,11 @@ volumes dangled). The rules, all enforced in `lib/hygiene.sh`:
   `docker system prune`.
 - **Inside a runner,** `dind-entrypoint.sh` prunes its OWN dockerd on every
   (re)start (socket pinned, skipped unless the daemon is the container's own):
-  images and build cache older than `DIND_PRUNE_UNTIL` (default 72h, by image
-  creation time, so old third-party images are re-pulled; raise it if that
-  hurts) and unused volumes.
-- **Disk guard.** Below `DISK_MIN_FREE_PCT` (default 10) free on the Docker
+  dangling images, build cache older than `DIND_PRUNE_UNTIL` (default 72h) and
+  unused volumes. Tagged images are the pull cache: they go only once that
+  dockerd's data passes `DIND_MAX_GB` (default 60), never by age (`until` is
+  image CREATION time, so an age prune would re-pull every service image).
+- **Disk guard.** Below `DISK_MIN_FREE_PCT` (default 5) free on the Docker
   root the tick logs `DISK LOW <n>% free` and does not scale up (scale-down
   stays allowed). Below `DISK_CRIT_FREE_PCT` (default 3) it also drains idle
   runners toward 1 through the normal idle-only path, skipping the cooldown.

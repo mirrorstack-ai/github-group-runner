@@ -91,10 +91,10 @@ disk_free_pct() {
 }
 
 # Prints "<ok|low|crit|unknown> <free%>". low = under DISK_MIN_FREE_PCT
-# (default 10), crit = under DISK_CRIT_FREE_PCT (default 3). An unreadable
+# (default 5), crit = under DISK_CRIT_FREE_PCT (default 3). An unreadable
 # disk is "unknown" and never blocks the pool.
 disk_level() {
-  local free min="${DISK_MIN_FREE_PCT:-10}" crit="${DISK_CRIT_FREE_PCT:-3}"
+  local free min="${DISK_MIN_FREE_PCT:-5}" crit="${DISK_CRIT_FREE_PCT:-3}"
   free="$(disk_free_pct)" || { echo "unknown -"; return 0; }
   if (( free < crit )); then echo "crit ${free}"
   elif (( free < min )); then echo "low ${free}"
