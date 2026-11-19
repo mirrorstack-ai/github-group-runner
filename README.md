@@ -127,8 +127,10 @@ volumes dangled). The rules, all enforced in `lib/hygiene.sh`:
   `state/our-volumes.txt` (git-ignored, created on demand; only anonymous
   64-hex volume names, never a named one). `drain_container` ledgers it again
   just before removal.
-- **Removing a runner removes its volume:** `docker rm -v`. The shared named
-  caches (`toolcache`, `gocache`) are not touched by `-v`.
+- **Removing a runner removes its volume:** `docker rm -v`, the first line of
+  defence (a volume inherited by name after a compose recreate may survive
+  it). The ledger sweeper below is the guarantee. The shared named caches
+  (`toolcache`, `gocache`) are not touched by `-v`.
 - **The sweeper runs every tick, before any scale decision.** It removes a
   volume only if it is in the ledger AND dangling, at most `RUNNER_SWEEP_MAX`
   (default 50) per tick, logs `swept N runner volumes`, and drops ledger
@@ -136,8 +138,10 @@ volumes dangled). The rules, all enforced in `lib/hygiene.sh`:
   never touched. We never run a host-wide `docker volume prune` or
   `docker system prune`.
 - **Inside a runner,** `dind-entrypoint.sh` prunes its OWN dockerd on every
-  (re)start: images and build cache older than 72h (`until` is the image
-  creation time) and unused volumes.
+  (re)start (socket pinned, skipped unless the daemon is the container's own):
+  images and build cache older than `DIND_PRUNE_UNTIL` (default 72h, by image
+  creation time, so old third-party images are re-pulled; raise it if that
+  hurts) and unused volumes.
 - **Disk guard.** Below `DISK_MIN_FREE_PCT` (default 10) free on the Docker
   root the tick logs `DISK LOW <n>% free` and does not scale up (scale-down
   stays allowed). Below `DISK_CRIT_FREE_PCT` (default 3) it also drains idle

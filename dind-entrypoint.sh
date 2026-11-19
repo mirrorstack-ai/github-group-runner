@@ -131,20 +131,28 @@ docker network prune -f >/dev/null 2>&1 || true
 
 # Keep that volume from growing for ever: it survives every `restart: always`.
 # Docker's `until` filter is on image CREATION time, so unused images older than
-# 72h go on every restart and are re-pulled when a job needs them. These run
-# against THIS container's own dockerd (the one started above, socket pinned
-# below), never the host's daemon.
+# DIND_PRUNE_UNTIL (72h) go on every restart and are re-pulled when a job needs
+# them: raise it if pulls hurt. These touch THIS container's own dockerd only:
+# the socket is pinned, and nothing is pruned unless the daemon behind it is
+# named after this container's hostname (a host daemon never is).
+PRUNE_UNTIL="${DIND_PRUNE_UNTIL:-72h}"
+inner_docker() { DOCKER_HOST=unix:///var/run/docker.sock docker "$@"; }
 prune_inner() {
-  local label="$1" out; shift
-  if out="$(DOCKER_HOST=unix:///var/run/docker.sock docker "$@" 2>&1)"; then
+  local label="$1" out me; shift
+  me="$(inner_docker info -f '{{.Name}}' 2>/dev/null || true)"
+  if [[ -z "${me}" || "${me}" != "$(uname -n)" ]]; then
+    log "${label}: skipped, the dockerd on /var/run/docker.sock is not this container's own"
+    return 0
+  fi
+  if out="$(inner_docker "$@" 2>&1)"; then
     log "${label}: $(printf '%s' "${out}" | tail -n 1)"
   else
     log "${label}: failed, ignored: $(printf '%s' "${out}" | tail -n 1)"
   fi
   return 0
 }
-prune_inner "image prune" image prune -af --filter until=72h || true
-prune_inner "builder prune" builder prune -af --filter until=72h || true
+prune_inner "image prune" image prune -af --filter until="${PRUNE_UNTIL}" || true
+prune_inner "builder prune" builder prune -af --filter until="${PRUNE_UNTIL}" || true
 prune_inner "volume prune" volume prune -af || true
 
 # Prove the exact thing `services:` jobs need: a published port reachable on

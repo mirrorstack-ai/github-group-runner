@@ -8,6 +8,8 @@
 # ledger below lists the volume mounted at /var/lib/docker in every container
 # of this compose project. Never a blanket prune on the host, never "looks
 # unused, so it must be ours".
+# LOCKING: the ledger functions need .autoscale.lock (autoscale.sh and rollout.sh
+# hold it); without it a lost append is a leak, never an over-delete.
 
 # One volume name per line, unique. state/ is created on demand and git-ignored.
 ledger_file() { printf '%s' "${RUNNER_LEDGER:-${PROJECT:-.}/state/our-volumes.txt}"; }
@@ -56,6 +58,7 @@ ledger_record_project() {
 sweep_runner_volumes() {
   local max="${1:-50}" f all dangling tmp name removed=0
   f="$(ledger_file)"
+  rm -f "${f}".??????                    # temp files of a sweeper that was killed mid-run (we hold the lock)
   [[ -s "$f" ]] || { echo 0; return 0; }
   all="$(docker volume ls -q 2>/dev/null)" || { echo 0; return 1; }
   dangling="$(docker volume ls -q -f dangling=true 2>/dev/null)" || { echo 0; return 1; }
@@ -70,7 +73,7 @@ sweep_runner_volumes() {
     fi
     printf '%s\n' "$name" >> "$tmp"
   done < "$f"
-  mv -f "$tmp" "$f"
+  mv -f "$tmp" "$f" || rm -f "$tmp"
   echo "$removed"
 }
 

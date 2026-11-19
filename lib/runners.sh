@@ -67,7 +67,9 @@ drain_container() {
   ledger_record_container "$cid" || true
   # -v removes this container's ANONYMOUS volumes, i.e. its private
   # /var/lib/docker (3066 of them dangled until 11-19 and filled the disk).
-  # The shared NAMED volumes (toolcache, gocache) are NOT touched by -v.
+  # First line of defence, not the guarantee: a volume inherited by name (a
+  # compose recreate) may survive it; the ledger sweeper (lib/hygiene.sh)
+  # reclaims that. The shared NAMED volumes (toolcache, gocache) are NOT touched.
   docker rm -v "$cid" >/dev/null 2>&1 || docker rm -f -v "$cid" >/dev/null 2>&1
   echo "$waited"
   return 0

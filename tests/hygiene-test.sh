@@ -20,15 +20,16 @@ cat > "$T/bin/docker" <<'EOF'
 #!/usr/bin/env bash
 # Fake docker. State lives in $FAKE: all / dangling (volume names), containers
 # (compose ps), mount.<cid> (the volume at /var/lib/docker). Every call is logged.
-echo "$*" >> "$FAKE/calls.log"
+echo "$*" >> "$FAKE/calls.log"; echo "${DOCKER_HOST:-}" >> "$FAKE/hosts.log"
 case "$1 ${2:-}" in
   "volume ls") [[ -e "$FAKE/ls_fails" ]] && exit 1
                case "$*" in *dangling=true*) cat "$FAKE/dangling";; *) cat "$FAKE/all";; esac;;
   "volume rm") for f in all dangling; do grep -vxF "$3" "$FAKE/$f" > "$FAKE/$f.new"; mv "$FAKE/$f.new" "$FAKE/$f"; done;;
   "compose ps") cat "$FAKE/containers";;
-  "info "*)    cat "$FAKE/rootdir" 2>/dev/null;;
+  "info "*)    case "$*" in *.Name*) echo "${INNER_NAME:-$(uname -n)}";; *) cat "$FAKE/rootdir" 2>/dev/null;; esac;;
   "inspect "*) case "$*" in
-                 *.Mounts*) cat "$FAKE/mount.${!#}" 2>/dev/null;;
+                 # only a template that really selects volume + /var/lib/docker gets a mount
+                 *.Mounts*'(eq .Type "volume") (eq .Destination "/var/lib/docker")'*) cat "$FAKE/mount.${!#}" 2>/dev/null;;
                  *State.Running*) echo false;;
                  *Config.Hostname*) echo "host-${!#}";;
                esac;;
@@ -95,11 +96,12 @@ check "the other 10 stay in the ledger for the next tick" test "$(lines "$RUNNER
 n="$(sweep_runner_volumes 50)"
 check "next tick removes the remaining 10" test "$n" = 10
 
-# ---- docker unable to list volumes: the ledger is not touched ----------------
+# ---- docker unable to list volumes: ledger untouched, stale temp file removed -
 reset; mkdir -p "$T/state"
-V 1 > "$RUNNER_LEDGER"; touch "$FAKE/ls_fails"
+V 1 > "$RUNNER_LEDGER"; touch "$FAKE/ls_fails"; : > "$RUNNER_LEDGER.abc123"
 sweep_runner_volumes 50 >/dev/null
 check "ledger survives a failing docker volume ls" grep -qxF "$(V 1)" "$RUNNER_LEDGER"
+nocheck "a killed sweeper's stale temp file is removed" test -e "$RUNNER_LEDGER.abc123"
 
 # ---- docker rm carries -v ----------------------------------------------------
 reset; PROJECT="$T"; export PROJECT
@@ -116,13 +118,20 @@ check "the forced fallback carries -v too" grep -qxF "rm -f -v c1" "$FAKE/calls.
 
 # ---- the inner-dockerd prune (dind-entrypoint.sh) ----------------------------
 reset
-eval "$(sed -n '/^prune_inner() {/,/^}/p' dind-entrypoint.sh)"
+eval "$(sed -n -e '/^inner_docker() /p' -e '/^prune_inner() {/,/^}/p' dind-entrypoint.sh)"
 log() { :; }
-check "entrypoint prunes images >72h"  grep -qF 'prune_inner "image prune" image prune -af --filter until=72h' dind-entrypoint.sh
-check "entrypoint prunes build cache >72h" grep -qF 'prune_inner "builder prune" builder prune -af --filter until=72h' dind-entrypoint.sh
-check "entrypoint prunes the inner volumes" grep -qF 'prune_inner "volume prune" volume prune -af' dind-entrypoint.sh
-prune_inner "volume prune" volume prune -af
+# each prune must be a live column-0 call BEFORE the last (exec-ing) drop_to_runner (SC2016: literal match)
+last="$(grep -n '^drop_to_runner$' dind-entrypoint.sh | tail -1 | cut -d: -f1)"
+# shellcheck disable=SC2016
+for p in 'image prune -af --filter until="${PRUNE_UNTIL}"' 'builder prune -af --filter until="${PRUNE_UNTIL}"' 'volume prune -af'; do
+  ln="$(grep -nF "prune_inner \"${p%% *} prune\" ${p}" dind-entrypoint.sh | sed -n 's/^\([0-9]*\):prune_inner .*/\1/p')"
+  check "entrypoint runs '${p%% -*}' before the runner starts" test "${ln:-99999}" -lt "${last:-0}"
+done
+DOCKER_HOST=unix:///tmp/host-docker.sock prune_inner "volume prune" volume prune -af   # a host env must not reach it
 check "prune_inner runs the docker command it is given" grep -qxF "volume prune -af" "$FAKE/calls.log"
+check "every call is pinned to the inner socket" test "$(sort -u "$FAKE/hosts.log")" = unix:///var/run/docker.sock
+: > "$FAKE/calls.log"; INNER_NAME=somebody-elses-daemon prune_inner "volume prune" volume prune -af
+nocheck "a dockerd not named after this container is never pruned" grep -qF "volume prune" "$FAKE/calls.log"
 touch "$FAKE/prune_fails"
 prune_inner "image prune" image prune -af; rc=$?
 check "a failing inner prune never aborts the entrypoint" test "$rc" = 0
