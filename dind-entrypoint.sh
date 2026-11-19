@@ -125,10 +125,27 @@ fi
 
 # /var/lib/docker is a persistent volume, so the previous job's service
 # containers and networks are still sitting there after a restart. Clear them so
-# each job starts clean and stale port bindings can't collide. Images are kept —
-# they're the only cache these ephemeral runners get.
+# each job starts clean and stale port bindings can't collide.
 docker container prune -f >/dev/null 2>&1 || true
 docker network prune -f >/dev/null 2>&1 || true
+
+# Keep that volume from growing for ever: it survives every `restart: always`.
+# Docker's `until` filter is on image CREATION time, so unused images older than
+# 72h go on every restart and are re-pulled when a job needs them. These run
+# against THIS container's own dockerd (the one started above, socket pinned
+# below), never the host's daemon.
+prune_inner() {
+  local label="$1" out; shift
+  if out="$(DOCKER_HOST=unix:///var/run/docker.sock docker "$@" 2>&1)"; then
+    log "${label}: $(printf '%s' "${out}" | tail -n 1)"
+  else
+    log "${label}: failed, ignored: $(printf '%s' "${out}" | tail -n 1)"
+  fi
+  return 0
+}
+prune_inner "image prune" image prune -af --filter until=72h || true
+prune_inner "builder prune" builder prune -af --filter until=72h || true
+prune_inner "volume prune" volume prune -af || true
 
 # Prove the exact thing `services:` jobs need: a published port reachable on
 # localhost from this namespace. Worth enabling for your first DGX boot.
