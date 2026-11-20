@@ -3,6 +3,10 @@
 # Sourced. Needs docker, jq, curl; deregister_runner needs GH_API_TOKEN and
 # GH_OWNER (resolve_gh_token from lib/gh-token.sh sets the former).
 
+# Volume ledger, sweeper and disk guard (disk hygiene on the shared host).
+# shellcheck source=lib/hygiene.sh
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/hygiene.sh"
+
 # A job is running in a container iff a Runner.Worker process exists in it.
 # Read from the HOST at the instant we act — the API snapshot lags job
 # assignment by up to ~30 s, which is exactly the window that killed jobs.
@@ -58,7 +62,15 @@ drain_container() {
     if has_worker "$cid"; then echo "$waited"; return 1; fi
     docker stop -t 30 "$cid" >/dev/null 2>&1
   fi
-  docker rm "$cid" >/dev/null 2>&1 || docker rm -f "$cid" >/dev/null 2>&1
+  # Write the container's private /var/lib/docker volume into the ledger first:
+  # if -v ever leaves it behind, the sweeper still knows it is ours.
+  ledger_record_container "$cid" || true
+  # -v removes this container's ANONYMOUS volumes, i.e. its private
+  # /var/lib/docker (3066 of them dangled until 11-19 and filled the disk).
+  # First line of defence, not the guarantee: a volume inherited by name (a
+  # compose recreate) may survive it; the ledger sweeper (lib/hygiene.sh)
+  # reclaims that. The shared NAMED volumes (toolcache, gocache) are NOT touched.
+  docker rm -v "$cid" >/dev/null 2>&1 || docker rm -f -v "$cid" >/dev/null 2>&1
   echo "$waited"
   return 0
 }

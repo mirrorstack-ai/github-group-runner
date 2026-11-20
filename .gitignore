@@ -6,3 +6,4 @@ autoscale.log
 .autoscale.state
 *.bak-*
 rollout*.out
+state/

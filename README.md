@@ -116,6 +116,39 @@ of containers it could not replace when `ROLLOUT_TIMEOUT` (default 30 min)
 runs out. `restart: always` re-runs the OLD image, so a rebuild without a
 rollout changes nothing.
 
+## Disk hygiene (shared host)
+
+The host is shared with other people's containers and volumes (on 11-19 the
+Spark's disk hit 100% because 3066 of our runners' private `/var/lib/docker`
+volumes dangled). The rules, all enforced in `lib/hygiene.sh`:
+
+- **Only what our own record proves is ours.** Every tick appends the volume
+  mounted at `/var/lib/docker` in each container of this compose project to
+  `state/our-volumes.txt` (git-ignored, created on demand; only anonymous
+  64-hex volume names, never a named one). `drain_container` ledgers it again
+  just before removal.
+- **Removing a runner removes its volume:** `docker rm -v`, the first line of
+  defence (a volume inherited by name after a compose recreate may survive
+  it). The ledger sweeper below is the guarantee. The shared named caches
+  (`toolcache`, `gocache`) are not touched by `-v`.
+- **The sweeper runs every tick, before any scale decision.** It removes a
+  volume only if it is in the ledger AND dangling, at most `RUNNER_SWEEP_MAX`
+  (default 50) per tick, logs `swept N runner volumes`, and drops ledger
+  entries whose volume is gone. A dangling volume that is not in the ledger is
+  never touched. We never run a host-wide `docker volume prune` or
+  `docker system prune`.
+- **Inside a runner,** `dind-entrypoint.sh` prunes its OWN dockerd on every
+  (re)start (socket pinned, skipped unless the daemon is the container's own):
+  dangling images, build cache older than `DIND_PRUNE_UNTIL` (default 72h) and
+  unused volumes. Tagged images are the pull cache: they go only once that
+  dockerd's data passes `DIND_MAX_GB` (default 60), never by age (`until` is
+  image CREATION time, so an age prune would re-pull every service image).
+- **Disk guard.** Below `DISK_MIN_FREE_PCT` (default 5) free on the Docker
+  root the tick logs `DISK LOW <n>% free` and does not scale up (scale-down
+  stays allowed). Below `DISK_CRIT_FREE_PCT` (default 3) it also drains idle
+  runners toward 1 through the normal idle-only path, skipping the cooldown.
+  An unreadable disk never blocks the pool.
+
 ## Operating
 
 - Health: `docker compose ps` and `tail -f autoscale.log`. A healthy log shows
@@ -133,6 +166,6 @@ rollout changes nothing.
 
 ## Not in git
 
-`.env`, `secrets/`, `autoscale.log`, `.autoscale.lock`, `.autoscale.state` and
-`*.bak-*` are ignored. Never commit a key or a live env file to this public
+`.env`, `secrets/`, `state/`, `autoscale.log`, `.autoscale.lock`,
+`.autoscale.state` and `*.bak-*` are ignored. Never commit a key or a live env file to this public
 repo.

@@ -59,6 +59,9 @@ STOP_GRACE="${RUNNER_STOP_GRACE:-120}"                    # s we wait for a runn
 SCALE_DOWN_COOLDOWN="${RUNNER_SCALE_DOWN_COOLDOWN:-300}"  # s after a scale-up during which we never scale down
 SCALE_DOWN_MAX="${RUNNER_SCALE_DOWN_MAX:-2}"              # containers removed per tick, at most
 STATE="${PROJECT}/.autoscale.state"                       # epoch of the last successful scale-up
+DISK_MIN_FREE_PCT="${DISK_MIN_FREE_PCT:-5}"              # % free below which we never scale up
+DISK_CRIT_FREE_PCT="${DISK_CRIT_FREE_PCT:-3}"             # % free below which idle runners drain toward 1
+SWEEP_MAX="${RUNNER_SWEEP_MAX:-50}"                       # ledgered volumes removed per tick, at most
 
 # One tick at a time: a scale-down can wait up to STOP_GRACE per container,
 # and cron fires every minute regardless (13:06: a v1 tick was still draining
@@ -67,6 +70,23 @@ exec 9>"${PROJECT}/.autoscale.lock"
 flock -n 9 || { say "skip: previous tick still running"; exit 0; }
 
 docker info >/dev/null 2>&1 || { say "docker unreachable"; exit 0; }
+
+# ---- disk hygiene on the shared host: BEFORE any scale decision ------------
+# Ledger = the /var/lib/docker volumes of OUR containers; the sweeper removes
+# only ledgered volumes that dangle, never anything else on the host
+# (lib/hygiene.sh). Runs before GitHub auth so a full disk is handled even when
+# the API is not.
+ledger_record_project
+swept="$(sweep_runner_volumes "$SWEEP_MAX")"; swept="${swept:-0}"
+if (( swept > 0 )); then
+  say "swept ${swept} runner volumes"
+  (( swept >= SWEEP_MAX )) && say "  sweep cap (${SWEEP_MAX}) reached, the rest next tick"
+fi
+read -r disk_state disk_free <<<"$(disk_level)"
+case "$disk_state" in
+  low|crit) say "DISK LOW ${disk_free}% free (< ${DISK_MIN_FREE_PCT}%)";;
+  unknown)  say "disk free space unreadable; not blocking";;
+esac
 
 GH_APP_KEY_TMP="$(mktemp)"; chmod 600 "$GH_APP_KEY_TMP"
 trap 'rm -f "$GH_APP_KEY_TMP"' EXIT
@@ -92,6 +112,9 @@ current=$(docker compose ps -q runner 2>/dev/null | wc -l | tr -d " ")
 desired=$(( busy + HEADROOM ))
 (( desired < MIN )) && desired=$MIN
 (( desired > MAX )) && desired=$MAX
+# Disk critical: drain idle runners down to 1 (the normal idle-only drain path
+# below; a runner with a job is never touched).
+[[ "$disk_state" == crit ]] && desired=1
 
 if (( desired == current )); then
   say "steady: busy=${busy} current=${current} (min=${MIN} max=${MAX})"
@@ -99,6 +122,11 @@ if (( desired == current )); then
 fi
 
 if (( desired > current )); then
+  # Disk guard: a pool that grows on a full disk only fills it faster.
+  if [[ "$disk_state" == low || "$disk_state" == crit ]]; then
+    say "hold: want ${current} -> ${desired} (busy=${busy}) but the disk is low (${disk_free}% free), not scaling up"
+    exit 0
+  fi
   say "scale UP ${current} -> ${desired} (busy=${busy})"
   # -u GH_APP_PRIVATE_KEY: guard against it being exported by whatever invoked
   # this script (cron env, a shell profile, ...) — the container must get
@@ -111,7 +139,7 @@ fi
 # ---- scale down: cooldown after a scale-up, capped per tick ----------------
 last_up=$(cat "$STATE" 2>/dev/null || echo 0)
 since_up=$(( $(date +%s) - last_up ))
-if (( since_up < SCALE_DOWN_COOLDOWN )); then
+if [[ "$disk_state" != crit ]] && (( since_up < SCALE_DOWN_COOLDOWN )); then   # a critical disk skips the cooldown
   say "hold: want ${current} -> ${desired} (busy=${busy}) but the last scale-up was ${since_up}s ago (< ${SCALE_DOWN_COOLDOWN}s)"
   exit 0
 fi

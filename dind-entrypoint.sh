@@ -125,10 +125,43 @@ fi
 
 # /var/lib/docker is a persistent volume, so the previous job's service
 # containers and networks are still sitting there after a restart. Clear them so
-# each job starts clean and stale port bindings can't collide. Images are kept —
-# they're the only cache these ephemeral runners get.
+# each job starts clean and stale port bindings can't collide.
 docker container prune -f >/dev/null 2>&1 || true
 docker network prune -f >/dev/null 2>&1 || true
+
+# Keep that volume from growing for ever: it survives every `restart: always`.
+# Dangling images, build cache older than DIND_PRUNE_UNTIL (72h) and the inner
+# dockerd's volumes go on every restart. Tagged images (postgres, pgvector,
+# localstack...) are the pull cache, so they go only once this dockerd's data
+# passes DIND_MAX_GB (default 60): `until` is on image CREATION time, so pruning
+# them by age would re-pull every service image on every job. These touch THIS
+# container's own dockerd only:
+# the socket is pinned, and nothing is pruned unless the daemon behind it is
+# named after this container's hostname (a host daemon never is).
+PRUNE_UNTIL="${DIND_PRUNE_UNTIL:-72h}"
+inner_docker() { DOCKER_HOST=unix:///var/run/docker.sock docker "$@"; }
+prune_inner() {
+  local label="$1" out me; shift
+  me="$(inner_docker info -f '{{.Name}}' 2>/dev/null || true)"
+  if [[ -z "${me}" || "${me}" != "$(uname -n)" ]]; then
+    log "${label}: skipped, the dockerd on /var/run/docker.sock is not this container's own"
+    return 0
+  fi
+  if out="$(inner_docker "$@" 2>&1)"; then
+    log "${label}: $(printf '%s' "${out}" | tail -n 1)"
+  else
+    log "${label}: failed, ignored: $(printf '%s' "${out}" | tail -n 1)"
+  fi
+  return 0
+}
+inner_gb() { du -sxk /var/lib/docker 2>/dev/null | awk '{print int($1/1048576)}'; }
+if (( $(inner_gb || echo 0) >= ${DIND_MAX_GB:-60} )); then
+  prune_inner "image prune (over ${DIND_MAX_GB:-60}G)" image prune -af || true
+else
+  prune_inner "image prune (dangling)" image prune -f || true
+fi
+prune_inner "builder prune" builder prune -af --filter until="${PRUNE_UNTIL}" || true
+prune_inner "volume prune" volume prune -af || true
 
 # Prove the exact thing `services:` jobs need: a published port reachable on
 # localhost from this namespace. Worth enabling for your first DGX boot.
